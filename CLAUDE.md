@@ -29,6 +29,18 @@ The shadcn registry (`ui.shadcn.com`) is blocked by this build environment's egr
 - Extra hardening beyond §6: `sources.created_at`, `issues.created_at`, a CHECK that a `govuk_atom` source has a `feed_url`, `changes.raw_item_id` is `on delete restrict`.
 - Note: the repo's `spec.md` predates the operator's v3 revisions above (`rendered_html`, §6.1a) — the operator is to push the updated text; until then this file records them.
 
+## Data access
+
+Server code talks to Postgres directly with `pg` via `DATABASE_URL` (`src/lib/db.ts`) — not supabase-js/PostgREST. Reasons: identical behaviour against local Postgres (integration tests) and Supabase (production, pooled connection string), and full SQL for the diff-heavy ingestion logic. supabase-js is used only for the admin's Auth session. RLS stays deny-all; `DATABASE_URL` is service-role-level and server-only.
+
+## Sources seeding
+
+The launch sources are seeded by migration (`…_seed_sources.sql`, `on conflict do nothing`): four gov.uk feeds enabled, plus a `manual` NICE row for the clipboard workflow. §4.5's "seed the API adapter as a disabled row" is deferred: §6's adapter CHECK only allows `govuk_atom | manual`, so the `nice_api` adapter value and its disabled row arrive with the phase-3 migration. (Reported to operator as a §4.5/§6 tension.)
+
+## Testing
+
+`npm test` (node:test via tsx) runs integration tests against a real local Postgres: schema rebuilt from the migration files, pipeline driven against a local mock server speaking gov.uk's Atom/Content API shapes. Start Postgres and set `DATABASE_URL` first (in this build environment: cluster under `/tmp/pgdata`, port 55432, run as `pguser`). Live gov.uk cannot be reached from this build environment (egress-blocked) — the §9.1/§9.2 live-feed proof must run on the deployed cron.
+
 ## Secrets
 
 Only via environment variables; `.env.example` names every one. `.env*` is gitignored (except `.env.example`, un-ignored explicitly). Never commit keys.
