@@ -6,7 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { saveAdminNote, setExcluded, setRelevance } from "@/app/admin/queue/actions";
+import {
+  acceptDraft,
+  requestDraft,
+  saveAdminNote,
+  setExcluded,
+  setRelevance,
+} from "@/app/admin/queue/actions";
 
 export interface QueueItem {
   id: string;
@@ -15,6 +21,7 @@ export interface QueueItem {
   status: "pending" | "included" | "excluded_duplicate";
   publisher_note: string | null;
   admin_note: string | null;
+  draft_note: string | null;
   detected_at: string;
   title: string;
   url: string;
@@ -37,6 +44,8 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
   const [items, setItems] = useState(initialItems);
   const [sel, setSel] = useState(0);
   const [reviewed, setReviewed] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const selRef = useRef<HTMLDivElement>(null);
 
@@ -69,6 +78,29 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
     if (excluding) advance();
   }
 
+  // §6.3: one keystroke accepts the draft into the impact line, where it can
+  // be edited before sending. The model never writes admin_note by itself.
+  function acceptKey() {
+    if (!current?.draft_note) return;
+    patch(current.id, { admin_note: current.draft_note });
+    void acceptDraft(current.id);
+    if (noteRef.current) noteRef.current.value = current.draft_note;
+  }
+
+  async function draftKey() {
+    if (!current || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const draft = await requestDraft(current.id);
+      patch(current.id, { draft_note: draft });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
@@ -88,6 +120,12 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
           break;
         case "2":
           relevanceKey("other");
+          break;
+        case "a":
+          acceptKey();
+          break;
+        case "d":
+          void draftKey();
           break;
         case "x":
           excludeKey();
@@ -243,7 +281,51 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
                   )}
                 </div>
 
-                <div>
+                <div className="md:col-span-2">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Model draft — never sent without acceptance
+                  </div>
+                  <div className="rounded-md border border-dashed p-3 text-sm">
+                    {item.draft_note ? (
+                      <>
+                        <p>{item.draft_note}</p>
+                        <div className="mt-2 flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-xs"
+                            onClick={acceptKey}
+                          >
+                            a · accept into impact line
+                          </Button>
+                          <span className="text-xs text-muted-foreground">
+                            the model never sets relevance (§6.3)
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-muted-foreground">
+                          {item.source_key === "nice"
+                            ? "No draft — NICE items are not drafted automatically (§6.3)."
+                            : "No draft."}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 text-xs"
+                          disabled={busy}
+                          onClick={() => void draftKey()}
+                        >
+                          {busy ? "drafting…" : "d · draft this item"}
+                        </Button>
+                      </div>
+                    )}
+                    {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+                  </div>
+                </div>
+
+                <div className="md:col-span-2">
                   <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Impact line — your words, what ships
                   </div>
@@ -251,7 +333,7 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
                     ref={noteRef}
                     rows={3}
                     defaultValue={item.admin_note ?? ""}
-                    placeholder="i · write the impact line"
+                    placeholder="i · write the impact line, or accept the draft and tweak"
                     onBlur={(e) => {
                       if (e.target.value !== (item.admin_note ?? "")) {
                         patch(item.id, { admin_note: e.target.value || null });
@@ -268,6 +350,7 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
       <p className="mt-3 text-xs text-muted-foreground">
         <kbd className="rounded border px-1">j</kbd>/<kbd className="rounded border px-1">k</kbd> move ·{" "}
         <kbd className="rounded border px-1">1</kbd> likely · <kbd className="rounded border px-1">2</kbd> other ·{" "}
+        <kbd className="rounded border px-1">a</kbd> accept draft · <kbd className="rounded border px-1">d</kbd> draft item ·{" "}
         <kbd className="rounded border px-1">x</kbd> exclude · <kbd className="rounded border px-1">i</kbd> impact line ·{" "}
         <kbd className="rounded border px-1">Esc</kbd> leave field
       </p>

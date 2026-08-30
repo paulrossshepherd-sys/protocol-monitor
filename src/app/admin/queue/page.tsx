@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export default async function QueuePage() {
   const { rows } = await getPool().query<QueueItem>(
     `select c.id, c.change_type, c.relevance, c.status, c.publisher_note,
-            c.admin_note, c.detected_at::text as detected_at,
+            c.admin_note, c.draft_note, c.detected_at::text as detected_at,
             r.title, r.url, r.external_id,
             s.key as source_key,
             r.raw_payload->>'update_information' as update_information,
