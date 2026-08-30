@@ -50,6 +50,15 @@ Middleware matches `/admin/:path*` and gates page loads, but **that is not the s
 
 Adding a new action or route handler means adding the check. There is no ambient protection to rely on.
 
+## Model drafting (§6.3)
+
+- Drafts live in `changes.draft_note`, never written straight to `admin_note`. Acceptance is an explicit operator act (`a` in the queue) that copies one into the other; the model never sets `relevance`, and no code path lets it.
+- **The automated pass excludes NICE entirely** — not the excerpt, not the title, not the source label. Bulk, systematic processing of NICE content is the phase-3 licensed feature; per-item drafting the operator asks for (`d` in the queue) is the targeted, operator-in-the-loop case §6.3 permits. `allowedInAutomatedDrafting()` is the one place that boundary is drawn, and it is tested by asserting nothing NICE-derived reaches a recording drafter.
+- Model is `claude-opus-5` at `effort: "medium"` — a bounded extraction with mandatory human review after it. One line in `src/lib/draft/model.ts` if that needs re-tuning.
+- Drafters are injected (`Drafter` type), so tests never call the real API.
+- A drafting failure must never cost the queue an item (§5): the change stays, without a draft. Items with nothing to draft from are stamped so later polls don't re-examine them.
+- `ANTHROPIC_API_KEY` unset means no drafts at all — the queue still works and every line is hand-written.
+
 ## NICE retrieval (§6.3, §9.10)
 
 - The update-information section lives at **`<guidance-url>/chapter/Update-information`** (verified on NG220), not on the root guidance page. Fetch the chapter page first; fall back to the root page for items laid out differently.
