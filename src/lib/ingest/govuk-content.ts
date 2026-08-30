@@ -56,8 +56,27 @@ export async function enrichFromContentApi(itemUrl: string): Promise<Enrichment>
       public_updated_at: record.public_updated_at ?? null,
       withdrawn: !!record.withdrawn_notice && Object.keys(record.withdrawn_notice).length > 0,
       change_history_latest_timestamp: latest?.public_timestamp ?? null,
+      // §6.3 draft material for the OGL sources. Crown copyright under the
+      // Open Government Licence, so storing an excerpt is unproblematic.
+      body_excerpt: body ? bodyExcerpt(body) : null,
     },
   };
+}
+
+const MAX_BODY_EXCERPT_CHARS = 2000;
+
+export function bodyExcerpt(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<\/(p|li|h\d|div)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*/g, "\n")
+    .trim()
+    .slice(0, MAX_BODY_EXCERPT_CHARS);
 }
 
 // §6.1: hash normalised content — text only, tags and whitespace stripped —

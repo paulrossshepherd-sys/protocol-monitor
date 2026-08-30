@@ -1,4 +1,5 @@
 import { getPool } from "@/lib/db";
+import { draftPendingChanges } from "@/lib/draft/generate";
 import { requireEnv } from "@/lib/env";
 import { pollAllSources } from "@/lib/ingest/poll";
 
@@ -14,7 +15,16 @@ export async function GET(request: Request) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const results = await pollAllSources(getPool());
+  const pool = getPool();
+  const results = await pollAllSources(pool);
+
+  // §6.3: draft impact lines for the new items, OGL sources only. Drafting
+  // never blocks ingestion — a failure here leaves the changes in the queue
+  // without drafts.
+  const drafts = process.env.ANTHROPIC_API_KEY
+    ? await draftPendingChanges(pool)
+    : null;
+
   const ok = results.every((r) => r.ok);
-  return Response.json({ ok, results }, { status: ok ? 200 : 500 });
+  return Response.json({ ok, results, drafts }, { status: ok ? 200 : 500 });
 }
