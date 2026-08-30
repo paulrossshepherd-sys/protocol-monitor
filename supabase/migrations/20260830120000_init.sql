@@ -3,6 +3,7 @@
 -- so adding a value later is a plain migration, not an enum alteration.
 
 create extension if not exists citext;
+create extension if not exists pgcrypto; -- gen_random_bytes()
 
 -- §6 sources: a source is a feed URL held in a row, not a hardcoded adapter (§4.2).
 create table sources (
@@ -47,12 +48,14 @@ create table issues (
   sent_at       timestamptz,
   slug          text unique,
   intro         text,
+  -- §6.1a: sent issues render from this stored snapshot, never live joins
+  rendered_html text,
   created_at    timestamptz not null default now()
 );
 
 create table changes (
   id              uuid primary key default gen_random_uuid(),
-  raw_item_id     uuid not null references raw_items (id) on delete cascade,
+  raw_item_id     uuid not null references raw_items (id) on delete restrict,
   change_type     text not null check (change_type in ('new', 'updated', 'withdrawn')),
   detected_at     timestamptz not null default now(),
   issue_id        uuid references issues (id) on delete set null,
@@ -76,8 +79,11 @@ create table subscribers (
   source_note       text,
   created_at        timestamptz not null default now(),
   unsubscribe_token text not null unique default encode(gen_random_bytes(24), 'hex'),
-  -- not in §6, required by double opt-in (§7.2): token the confirmation link carries
-  confirm_token     text not null unique default encode(gen_random_bytes(24), 'hex')
+  -- single-use double opt-in token (§7.2): nulled by the confirm handler when
+  -- confirmed_at is set, and the constraint holds it to that
+  confirm_token     text unique default encode(gen_random_bytes(24), 'hex'),
+  constraint confirm_token_single_use
+    check (confirmed_at is null or confirm_token is null)
 );
 
 create table question_responses (

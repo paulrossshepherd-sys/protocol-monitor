@@ -22,11 +22,12 @@ The shadcn registry (`ui.shadcn.com`) is blocked by this build environment's egr
 - Emails are `citext` (extension enabled in the init migration).
 - **RLS is deny-all**: enabled on every table with no policies. All data access goes through server code using `SUPABASE_SERVICE_ROLE_KEY`; the anon key is only used for the admin's Supabase Auth session. This is the "row-level security beyond protecting the single admin surface" boundary from §2 — do not add per-table policies for subscribers, who have no accounts.
 
-### Additions beyond the spec's §6 model (spec silent, choice recorded here)
+### Schema notes
 
-- `subscribers.confirm_token` — double opt-in (§7.2) needs a confirmation token; §6 only lists `unsubscribe_token`. Both default to random hex server-side.
-- `poll_runs` table — §6.2 requires every poll logged (source, items seen, items new, errors) and failures visible on the dashboard; §6 has no table for it.
-- `sources.created_at`, `issues.created_at`, and a CHECK that a `govuk_atom` source has a `feed_url`.
+- `subscribers.confirm_token` (double opt-in, §7.2) and `poll_runs` (§6.2 logging) started as spec-silent additions; the operator has accepted both into the spec. `confirm_token` is single-use: nullable, unique, nulled when `confirmed_at` is set (CHECK-enforced).
+- `issues.rendered_html` — §6.1a: a sent issue renders from this stored snapshot, never from live joins against `changes`.
+- Extra hardening beyond §6: `sources.created_at`, `issues.created_at`, a CHECK that a `govuk_atom` source has a `feed_url`, `changes.raw_item_id` is `on delete restrict`.
+- Note: the repo's `spec.md` predates the operator's v3 revisions above (`rendered_html`, §6.1a) — the operator is to push the updated text; until then this file records them.
 
 ## Secrets
 
