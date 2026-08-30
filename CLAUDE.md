@@ -29,9 +29,33 @@ The shadcn registry (`ui.shadcn.com`) is blocked by this build environment's egr
 - Extra hardening beyond §6: `sources.created_at`, `issues.created_at`, a CHECK that a `govuk_atom` source has a `feed_url`, `changes.raw_item_id` is `on delete restrict`.
 - Note: the repo's `spec.md` predates the operator's v3 revisions above (`rendered_html`, §6.1a) — the operator is to push the updated text; until then this file records them.
 
+## Supabase project
+
+Production is the **Protocol Monitor** project, ref `jamnlpyjwdwvglqcxxcx` (eu-west-1). Migrations are applied through the Supabase MCP connector's `apply_migration` so they land in the project's migration history — same SQL as the files in `supabase/migrations/`, never ad-hoc dashboard SQL.
+
+The admin's auth user is created by hand in the dashboard (Authentication → Add user) with the address that `ADMIN_EMAIL` names. No code path creates users, deliberately — there is exactly one account and sign-up is not a feature.
+
 ## Data access
 
 Server code talks to Postgres directly with `pg` via `DATABASE_URL` (`src/lib/db.ts`) — not supabase-js/PostgREST. Reasons: identical behaviour against local Postgres (integration tests) and Supabase (production, pooled connection string), and full SQL for the diff-heavy ingestion logic. supabase-js is used only for the admin's Auth session. RLS stays deny-all; `DATABASE_URL` is service-role-level and server-only.
+
+## Authorisation — every entry point checks for itself
+
+Middleware matches `/admin/:path*` and gates page loads, but **that is not the security boundary**: server actions resolve by action ID and can be POSTed to any route, including ones the matcher never sees. So:
+
+- **Every server action calls `await requireAdmin()` as its first line** (`src/lib/auth/require-admin.ts`) — reads included, since a preview action leaks data just as a write action corrupts it.
+- **Every route handler** that touches data does the same (`/admin/subscribers/export` returns 401 rather than throwing).
+- `/api/cron/poll` is the exception: it has no user session, and authorises with `CRON_SECRET` instead.
+- `requireAdmin()` takes an injectable user-getter so the deny paths are unit-testable without a request context.
+
+Adding a new action or route handler means adding the check. There is no ambient protection to rely on.
+
+## NICE retrieval (§6.3, §9.10)
+
+- The update-information section lives at **`<guidance-url>/chapter/Update-information`** (verified on NG220), not on the root guidance page. Fetch the chapter page first; fall back to the root page for items laid out differently.
+- The fetch allowlist is built from the URLs a paste surfaced, and permits **paths beneath** each one (chapter pages) — not sibling guidance items, not prefix-alikes (`ng280` is not beneath `ng28`), not other origins. Anything else throws rather than skipping quietly.
+- A blocked fetch (nice.org.uk 403s much cloud-origin traffic) is recorded per item in `raw_items.raw_payload.update_information_error` and surfaced in the queue as "open the source page" — never fatal to the commit.
+- Excerpts are internal queue data on `raw_payload`. They are never rendered into an issue; what ships is the operator's `admin_note`.
 
 ## Sources seeding
 
@@ -39,7 +63,11 @@ The launch sources are seeded by migration (`…_seed_sources.sql`, `on conflict
 
 ## Testing
 
-`npm test` (node:test via tsx) runs integration tests against a real local Postgres: schema rebuilt from the migration files, pipeline driven against a local mock server speaking gov.uk's Atom/Content API shapes. Start Postgres and set `DATABASE_URL` first (in this build environment: cluster under `/tmp/pgdata`, port 55432, run as `pguser`). Live gov.uk cannot be reached from this build environment (egress-blocked) — the §9.1/§9.2 live-feed proof must run on the deployed cron.
+`npm test` (node:test via tsx) runs integration tests against a real local Postgres: schema rebuilt from the migration files, pipelines driven against local mock servers speaking gov.uk's Atom/Content API and NICE's page shapes. Tests run serially (`--test-concurrency=1`) because they share one database and each file rebuilds the schema.
+
+Start Postgres and set `DATABASE_URL` first. In this build environment: cluster under `/tmp/pgdata`, port 55432, run as the unprivileged `pguser` (Postgres refuses to start as root, and needs `-k /tmp/pgdata` because `/var/run/postgresql` is not writable). The cluster does not survive between sessions and can die mid-session — restart it before running tests.
+
+**Live gov.uk cannot be reached from this build environment** (egress-blocked at the proxy, confirmed by both curl and the fetch tool). The §9.1/§9.2 live-feed proof must run on the deployed cron over several days; it stays open until then.
 
 ## Secrets
 
@@ -47,10 +75,17 @@ Only via environment variables; `.env.example` names every one. `.env*` is gitig
 
 ## gov.uk fetching (§4.4)
 
-Sequential, never parallel. Descriptive User-Agent including `GOVUK_CONTACT_EMAIL`. Never fetch `/search/all*`. Enrich only entries the feed reports as changed.
+Sequential, never parallel. Descriptive User-Agent including `GOVUK_CONTACT_EMAIL`. Never fetch `/search/all*` — the guard is in `govukFetch`, and the sources screen refuses to save such a URL as data too. Enrich only entries the feed reports as changed.
+
+## Ingestion invariants (§5, §6.1)
+
+- **Nothing is dropped silently.** When a feed reports a revision but neither `change_history` nor a content hash can confirm it, an `updated` change is still created with a null `publisher_note`. Under-reporting is the failure mode with real consequences; a redundant row is not.
+- **A `raw_item` never exists without its `change` row.** Both writes for an entry happen in one transaction. The enrichment HTTP call stays outside it — no network round-trip inside an open transaction.
 
 ## Working practices
 
 - Small commits, one concern per commit.
 - Plain shadcn defaults in the UI; keyboard speed over looks in the admin.
 - When reality contradicts the spec (feed format, missing field), stop and report — don't silently adapt.
+- **Verify the shape of an external page before building a parser against it.** The NICE update-information path was assumed rather than checked, and was wrong; the operator caught it. Where this environment cannot reach the source, say so and flag the assumption instead of leaving it silent in the code.
+- Each build step ends at a review gate: report what was built, what was verified and how, and what remains open — then wait.
