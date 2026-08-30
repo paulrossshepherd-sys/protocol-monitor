@@ -20,11 +20,20 @@ export async function GET(request: Request) {
 
   // §6.3: draft impact lines for the new items, OGL sources only. Drafting
   // never blocks ingestion — a failure here leaves the changes in the queue
-  // without drafts.
-  const drafts = process.env.ANTHROPIC_API_KEY
-    ? await draftPendingChanges(pool)
-    : null;
+  // without drafts, and never fails a poll that succeeded.
+  let drafts = null;
+  let draftError: string | null = null;
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      drafts = await draftPendingChanges(pool);
+    } catch (err) {
+      draftError = err instanceof Error ? err.message : String(err);
+    }
+  }
 
   const ok = results.every((r) => r.ok);
-  return Response.json({ ok, results, drafts }, { status: ok ? 200 : 500 });
+  return Response.json(
+    { ok, results, drafts, draftError },
+    { status: ok ? 200 : 500 }
+  );
 }

@@ -79,12 +79,20 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
   }
 
   // §6.3: one keystroke accepts the draft into the impact line, where it can
-  // be edited before sending. The model never writes admin_note by itself.
-  function acceptKey() {
+  // be edited before sending. The model never writes admin_note by itself, and
+  // an impact line you have already written is never overwritten.
+  async function acceptKey() {
     if (!current?.draft_note) return;
-    patch(current.id, { admin_note: current.draft_note });
-    void acceptDraft(current.id);
-    if (noteRef.current) noteRef.current.value = current.draft_note;
+    setError(null);
+    const result = await acceptDraft(current.id);
+    if (result.applied) {
+      patch(current.id, { admin_note: result.adminNote });
+      if (noteRef.current) noteRef.current.value = result.adminNote ?? "";
+      return;
+    }
+    if (result.reason === "already_written") {
+      setError("Impact line already written — clear it first to take the draft.");
+    }
   }
 
   async function draftKey() {
@@ -122,7 +130,7 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
           relevanceKey("other");
           break;
         case "a":
-          acceptKey();
+          void acceptKey();
           break;
         case "d":
           void draftKey();
@@ -294,9 +302,12 @@ export function QueueClient({ initialItems }: { initialItems: QueueItem[] }) {
                             variant="outline"
                             size="sm"
                             className="h-6 text-xs"
-                            onClick={acceptKey}
+                            disabled={!!item.admin_note}
+                            onClick={() => void acceptKey()}
                           >
-                            a · accept into impact line
+                            {item.admin_note
+                              ? "impact line already written"
+                              : "a · accept into impact line"}
                           </Button>
                           <span className="text-xs text-muted-foreground">
                             the model never sets relevance (§6.3)

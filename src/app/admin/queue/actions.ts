@@ -4,21 +4,17 @@ import { revalidatePath } from "next/cache";
 
 import { requireAdmin } from "@/lib/auth/require-admin";
 import { getPool } from "@/lib/db";
-import { draftOneChange } from "@/lib/draft/generate";
+import { acceptDraftIntoNote, draftOneChange, type AcceptResult } from "@/lib/draft/generate";
 
 // §6.3: acceptance is an explicit act. The draft becomes the admin's text only
 // here, by copying draft_note into admin_note — relevance is never touched, by
-// this action or by any model output.
-export async function acceptDraft(changeId: string): Promise<string | null> {
+// this action or by any model output. An impact line already written is never
+// overwritten; clearing it first is the way to take the draft instead.
+export async function acceptDraft(changeId: string): Promise<AcceptResult> {
   await requireAdmin();
-  const { rows } = await getPool().query<{ admin_note: string | null }>(
-    `update changes set admin_note = draft_note
-      where id = $1 and draft_note is not null
-      returning admin_note`,
-    [changeId]
-  );
+  const result = await acceptDraftIntoNote(getPool(), changeId);
   revalidatePath("/admin/queue");
-  return rows[0]?.admin_note ?? null;
+  return result;
 }
 
 /** Draft this one item now, on the operator's request. */

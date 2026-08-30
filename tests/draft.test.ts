@@ -3,6 +3,7 @@ import { after, before, test } from "node:test";
 import type { Pool } from "pg";
 
 import {
+  acceptDraftIntoNote,
   allowedInAutomatedDrafting,
   buildDraftRequest,
   draftOneChange,
@@ -183,6 +184,46 @@ test("per-item drafting may use a NICE excerpt when the operator asks (§6.3)", 
   );
   assert.match(after[0].draft_note, /medicines-optimisation/);
   assert.equal(after[0].admin_note, null); // still requires acceptance
+});
+
+test("accepting a draft never overwrites an impact line already written", async () => {
+  const { rows } = await pool.query<{ id: string }>(
+    `select c.id from changes c join raw_items r on r.id = c.raw_item_id
+      where r.external_id = 'ukhsa-1'`
+  );
+  const changeId = rows[0].id;
+
+  // first acceptance takes the draft into an empty impact line
+  const first = await acceptDraftIntoNote(pool, changeId);
+  assert.equal(first.applied, true);
+  assert.match(first.adminNote!, /Check protocols/);
+
+  // the operator then edits it in their own words
+  const edited = "Immunisation protocols naming MMR product choice need review.";
+  await pool.query(`update changes set admin_note = $2 where id = $1`, [changeId, edited]);
+
+  // a stray 'a' keystroke must not destroy that edit
+  const second = await acceptDraftIntoNote(pool, changeId);
+  assert.equal(second.applied, false);
+  assert.equal(second.reason, "already_written");
+  assert.equal(second.adminNote, edited);
+
+  const { rows: after } = await pool.query(
+    `select admin_note from changes where id = $1`,
+    [changeId]
+  );
+  assert.equal(after[0].admin_note, edited);
+});
+
+test("accepting reports the case where there is no draft to take", async () => {
+  const { rows } = await pool.query<{ id: string }>(
+    `select c.id from changes c join raw_items r on r.id = c.raw_item_id
+      where r.external_id = 'ukhsa-2'`
+  );
+  const result = await acceptDraftIntoNote(pool, rows[0].id);
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, "no_draft");
+  assert.equal(result.adminNote, null);
 });
 
 test("material assembly skips items carrying nothing", () => {

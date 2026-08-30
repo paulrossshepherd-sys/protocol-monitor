@@ -139,6 +139,43 @@ export async function draftPendingChanges(
   return result;
 }
 
+export interface AcceptResult {
+  applied: boolean;
+  adminNote: string | null;
+  reason?: "already_written" | "no_draft";
+}
+
+/**
+ * §6.3: acceptance copies draft_note into admin_note, and only ever into an
+ * empty one. `a` is a single keystroke in a keyboard-driven queue, so an
+ * accept that could overwrite the operator's own words would eventually
+ * destroy them; the guard is in the SQL, not just the UI.
+ */
+export async function acceptDraftIntoNote(
+  pool: Pool,
+  changeId: string
+): Promise<AcceptResult> {
+  const { rows } = await pool.query<{ admin_note: string | null }>(
+    `update changes set admin_note = draft_note
+      where id = $1 and draft_note is not null and admin_note is null
+      returning admin_note`,
+    [changeId]
+  );
+  if (rows[0]) return { applied: true, adminNote: rows[0].admin_note };
+
+  const { rows: current } = await pool.query<{
+    admin_note: string | null;
+    draft_note: string | null;
+  }>(`select admin_note, draft_note from changes where id = $1`, [changeId]);
+  if (!current[0]) throw new Error("Change not found");
+
+  return {
+    applied: false,
+    adminNote: current[0].admin_note,
+    reason: current[0].admin_note !== null ? "already_written" : "no_draft",
+  };
+}
+
 async function storeDraft(pool: Pool, changeId: string, draft: string): Promise<void> {
   // draft_generated_at is stamped even for an empty draft, so a thin item is
   // not retried on every poll.
