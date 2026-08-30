@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { GovUkAtomFeed } from "@/lib/ingest/govuk-atom";
 import { enrichFromContentApi, type Enrichment } from "@/lib/ingest/govuk-content";
@@ -61,10 +61,15 @@ export async function pollSource(pool: Pool, source: SourceRow): Promise<PollRes
     result.itemsSeen = entries.length;
 
     // Sequential on purpose — never parallelise gov.uk fetches (§4.4).
-    for (const entry of entries) {
-      const outcome = await processEntry(pool, source, entry);
-      if (outcome === "new") result.itemsNew++;
-      if (outcome === "updated") result.itemsUpdated++;
+    const client = await pool.connect();
+    try {
+      for (const entry of entries) {
+        const outcome = await processEntry(client, source, entry);
+        if (outcome === "new") result.itemsNew++;
+        if (outcome === "updated") result.itemsUpdated++;
+      }
+    } finally {
+      client.release();
     }
 
     await pool.query(`update sources set last_polled_at = now() where id = $1`, [
@@ -88,14 +93,16 @@ export async function pollSource(pool: Pool, source: SourceRow): Promise<PollRes
 
 type EntryOutcome = "new" | "updated" | "unchanged";
 
+// Reads and the enrichment fetch run outside the transaction (no HTTP inside a
+// tx); the writes are atomic so a raw_item can never exist without its change.
 async function processEntry(
-  pool: Pool,
+  db: PoolClient,
   source: SourceRow,
   entry: FeedEntry
 ): Promise<EntryOutcome> {
   const {
     rows: [existing],
-  } = await pool.query<RawItemRow>(
+  } = await db.query<RawItemRow>(
     `select id, revised_at, change_history_len, change_history_latest,
             content_hash, raw_payload
        from raw_items
@@ -106,32 +113,34 @@ async function processEntry(
   if (!existing) {
     // §6.1: unseen (source_id, external_id) → new
     const enrichment = await enrichFromContentApi(entry.url);
-    const {
-      rows: [item],
-    } = await pool.query<{ id: string }>(
-      `insert into raw_items
-         (source_id, external_id, url, title, published_at, revised_at,
-          raw_payload, change_history_len, change_history_latest, content_hash)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       returning id`,
-      [
-        source.id,
-        entry.externalId,
-        entry.url,
-        entry.title,
-        entry.publishedAt,
-        entry.revisedAt,
-        enrichment.payload,
-        enrichment.changeHistoryLen,
-        enrichment.latestNote,
-        enrichment.contentHash,
-      ]
-    );
-    await pool.query(
-      `insert into changes (raw_item_id, change_type, publisher_note)
-       values ($1, 'new', $2)`,
-      [item.id, enrichment.latestNote]
-    );
+    await inTransaction(db, async () => {
+      const {
+        rows: [item],
+      } = await db.query<{ id: string }>(
+        `insert into raw_items
+           (source_id, external_id, url, title, published_at, revised_at,
+            raw_payload, change_history_len, change_history_latest, content_hash)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         returning id`,
+        [
+          source.id,
+          entry.externalId,
+          entry.url,
+          entry.title,
+          entry.publishedAt,
+          entry.revisedAt,
+          enrichment.payload,
+          enrichment.changeHistoryLen,
+          enrichment.latestNote,
+          enrichment.contentHash,
+        ]
+      );
+      await db.query(
+        `insert into changes (raw_item_id, change_type, publisher_note)
+         values ($1, 'new', $2)`,
+        [item.id, enrichment.latestNote]
+      );
+    });
     return "new";
   }
 
@@ -149,31 +158,44 @@ async function processEntry(
   const wasWithdrawn = existing.raw_payload?.withdrawn === true;
   const changeType = detectChange(existing, enrichment, wasWithdrawn);
 
-  await pool.query(
-    `update raw_items
-        set url = $2, title = $3, revised_at = $4, raw_payload = $5,
-            change_history_len = $6, change_history_latest = $7, content_hash = $8
-      where id = $1`,
-    [
-      existing.id,
-      entry.url,
-      entry.title,
-      entry.revisedAt,
-      enrichment.payload,
-      enrichment.changeHistoryLen,
-      enrichment.latestNote,
-      enrichment.contentHash,
-    ]
-  );
+  await inTransaction(db, async () => {
+    await db.query(
+      `update raw_items
+          set url = $2, title = $3, revised_at = $4, raw_payload = $5,
+              change_history_len = $6, change_history_latest = $7, content_hash = $8
+        where id = $1`,
+      [
+        existing.id,
+        entry.url,
+        entry.title,
+        entry.revisedAt,
+        enrichment.payload,
+        enrichment.changeHistoryLen,
+        enrichment.latestNote,
+        enrichment.contentHash,
+      ]
+    );
+    if (changeType) {
+      await db.query(
+        `insert into changes (raw_item_id, change_type, publisher_note)
+         values ($1, $2, $3)`,
+        [existing.id, changeType, enrichment.latestNote]
+      );
+    }
+  });
 
-  if (!changeType) return "unchanged";
+  return changeType ? "updated" : "unchanged";
+}
 
-  await pool.query(
-    `insert into changes (raw_item_id, change_type, publisher_note)
-     values ($1, $2, $3)`,
-    [existing.id, changeType, enrichment.latestNote]
-  );
-  return "updated";
+async function inTransaction(db: PoolClient, fn: () => Promise<void>): Promise<void> {
+  await db.query("begin");
+  try {
+    await fn();
+    await db.query("commit");
+  } catch (err) {
+    await db.query("rollback");
+    throw err;
+  }
 }
 
 function detectChange(
@@ -196,5 +218,7 @@ function detectChange(
   if (enrichment.contentHash && existing.content_hash) {
     return enrichment.contentHash !== existing.content_hash ? "updated" : null;
   }
-  return null;
+  // The feed reported a revision and nothing can confirm or deny it: report it
+  // (publisher_note stays null). A silent drop would break §5.
+  return "updated";
 }

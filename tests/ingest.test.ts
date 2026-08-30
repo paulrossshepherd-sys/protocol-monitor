@@ -44,11 +44,21 @@ const hashOnly: MockItem = {
   body: "<div><p>Providers should  review use of the device.</p></div>",
 };
 
+// No change_history and no body — nothing to confirm or deny a revision with
+const noEvidence: MockItem = {
+  slug: "government/publications/collection-page-no-history",
+  title: "Immunisation collection page",
+  published: "2026-06-01T08:00:00+01:00",
+  updated: "2026-06-01T08:00:00+01:00",
+  changeHistory: null,
+};
+
 before(async () => {
   pool = await freshDatabase();
   mock = new MockGovUk([
     { path: "/feed/ukhsa.atom", items: [chapter21, scheduleNote] },
     { path: "/feed/mhra.atom", items: [hashOnly] },
+    { path: "/feed/noev.atom", items: [noEvidence] },
   ]);
   await mock.start();
 
@@ -58,8 +68,13 @@ before(async () => {
   await pool.query(
     `insert into sources (key, name, adapter, feed_url, enabled) values
        ('test_ukhsa', 'Test UKHSA', 'govuk_atom', $1, true),
-       ('test_mhra', 'Test MHRA', 'govuk_atom', $2, true)`,
-    [`${mock.baseUrl}/feed/ukhsa.atom`, `${mock.baseUrl}/feed/mhra.atom`]
+       ('test_mhra', 'Test MHRA', 'govuk_atom', $2, true),
+       ('test_noev', 'Test no-evidence', 'govuk_atom', $3, true)`,
+    [
+      `${mock.baseUrl}/feed/ukhsa.atom`,
+      `${mock.baseUrl}/feed/mhra.atom`,
+      `${mock.baseUrl}/feed/noev.atom`,
+    ]
   );
 });
 
@@ -79,11 +94,12 @@ test("first poll creates raw_items and 'new' changes with publisher notes", asyn
     results.map((r) => ({ key: r.sourceKey, seen: r.itemsSeen, new: r.itemsNew, ok: r.ok })),
     [
       { key: "test_mhra", seen: 1, new: 1, ok: true },
+      { key: "test_noev", seen: 1, new: 1, ok: true },
       { key: "test_ukhsa", seen: 2, new: 2, ok: true },
     ]
   );
-  assert.equal(await count(`select count(*) from raw_items`), 3);
-  assert.equal(await count(`select count(*) from changes where change_type = 'new'`), 3);
+  assert.equal(await count(`select count(*) from raw_items`), 4);
+  assert.equal(await count(`select count(*) from changes where change_type = 'new'`), 4);
 
   // §9.3: publisher_note populated from change_history where supplied
   const { rows } = await pool.query(
@@ -99,13 +115,13 @@ test("second poll with no upstream changes creates zero new changes (§9.2)", as
   const results = await pollAllSources(pool);
   assert.ok(results.every((r) => r.ok));
   assert.equal(await count(`select count(*) from changes`), before);
-  assert.equal(await count(`select count(*) from raw_items`), 3);
+  assert.equal(await count(`select count(*) from raw_items`), 4);
 });
 
 test("unchanged entries are not re-enriched (§4.4)", () => {
   const enrichmentCalls = mock.requestLog.filter((p) => p.startsWith("/api/content/"));
-  // 3 items enriched once each on first poll; none on the second
-  assert.equal(enrichmentCalls.length, 3);
+  // 4 items enriched once each on first poll; none on the second
+  assert.equal(enrichmentCalls.length, 4);
 });
 
 test("a change_history gaining an entry creates exactly one 'updated' change", async () => {
@@ -144,6 +160,19 @@ test("content-hash fallback detects a body change when there is no change_histor
   assert.equal(results.find((r) => r.sourceKey === "test_mhra")!.itemsUpdated, 1);
 });
 
+test("a reported revision with no confirming evidence is still an 'updated' change (§5)", async () => {
+  noEvidence.updated = "2026-08-29T11:00:00+01:00";
+  const results = await pollAllSources(pool);
+  assert.equal(results.find((r) => r.sourceKey === "test_noev")!.itemsUpdated, 1);
+  const { rows } = await pool.query(
+    `select c.publisher_note from changes c
+       join raw_items r on r.id = c.raw_item_id
+      where c.change_type = 'updated' and r.title = 'Immunisation collection page'`
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].publisher_note, null);
+});
+
 test("a withdrawal creates a 'withdrawn' change", async () => {
   scheduleNote.withdrawn = true;
   scheduleNote.updated = "2026-08-29T10:00:00+01:00";
@@ -156,7 +185,7 @@ test("a withdrawal creates a 'withdrawn' change", async () => {
 
 test("every poll is logged to poll_runs, and failures are recorded not swallowed (§6.2)", async () => {
   const okRuns = await count(`select count(*) from poll_runs where ok`);
-  assert.ok(okRuns >= 12); // 2 sources × 6 polls so far
+  assert.ok(okRuns >= 12); // 3 sources × many polls so far
 
   await pool.query(
     `insert into sources (key, name, adapter, feed_url, enabled)

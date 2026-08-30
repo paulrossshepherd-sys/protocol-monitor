@@ -35,7 +35,7 @@ Server code talks to Postgres directly with `pg` via `DATABASE_URL` (`src/lib/db
 
 ## Sources seeding
 
-The launch sources are seeded by migration (`…_seed_sources.sql`, `on conflict do nothing`): four gov.uk feeds enabled, plus a `manual` NICE row for the clipboard workflow. §4.5's "seed the API adapter as a disabled row" is deferred: §6's adapter CHECK only allows `govuk_atom | manual`, so the `nice_api` adapter value and its disabled row arrive with the phase-3 migration. (Reported to operator as a §4.5/§6 tension.)
+The launch sources are seeded by migration (`…_seed_sources.sql`, `on conflict do nothing`): gov.uk feeds plus a `manual` NICE row for the clipboard workflow. The wide UKHSA feed is the single UKHSA source — the keyword-filtered `ukhsa_green_book` feed is a strict subset that double-reports every item, so it is disabled by migration (operator's §4.1 correction). §4.5's "seed the API adapter as a disabled row" is deferred: §6's adapter CHECK only allows `govuk_atom | manual`, so the `nice_api` adapter value and its disabled row arrive with the phase-3 migration. (Reported to operator as a §4.5/§6 tension.)
 
 ## Testing
 
