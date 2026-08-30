@@ -2,10 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 
+import { requireAdmin } from "@/lib/auth/require-admin";
 import { getPool } from "@/lib/db";
 
 // Manual unsubscribe (§7.1): mark unsubscribed and suppress, in one transaction.
 export async function unsubscribeSubscriber(subscriberId: string) {
+  await requireAdmin();
   const pool = getPool();
   const client = await pool.connect();
   try {

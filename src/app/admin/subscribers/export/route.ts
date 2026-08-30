@@ -1,3 +1,4 @@
+import { requireAdmin } from "@/lib/auth/require-admin";
 import { getPool } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +9,11 @@ const csvCell = (v: unknown) => {
 };
 
 export async function GET() {
+  try {
+    await requireAdmin();
+  } catch {
+    return new Response("Not authorised", { status: 401 });
+  }
   const { rows } = await getPool().query(
     `select email, org_type, confirmed_at, unsubscribed_at, source_note, created_at
        from subscribers order by created_at`

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
+import { requireAdmin } from "@/lib/auth/require-admin";
 import { getPool } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { renderIssueHtml } from "@/lib/issue/render";
@@ -11,6 +12,7 @@ export async function updateIssueFields(
   issueId: string,
   fields: { subject: string; intro: string; period_start: string; period_end: string }
 ) {
+  await requireAdmin();
   await getPool().query(
     `update issues
         set subject = nullif($2, ''), intro = nullif($3, ''),
@@ -24,6 +26,7 @@ export async function updateIssueFields(
 // §9.11: every polled item ends up included or explicitly excluded. Attaching
 // pulls all pending changes into the draft; excluded ones stay excluded.
 export async function attachPendingChanges(issueId: string) {
+  await requireAdmin();
   await getPool().query(
     `update changes set issue_id = $1, status = 'included'
       where issue_id is null and status = 'pending'`,
@@ -34,6 +37,7 @@ export async function attachPendingChanges(issueId: string) {
 }
 
 export async function detachChange(changeId: string) {
+  await requireAdmin();
   await getPool().query(
     `update changes set issue_id = null, status = 'pending' where id = $1`,
     [changeId]
@@ -44,6 +48,7 @@ export async function detachChange(changeId: string) {
 
 // Test send to the admin only (§7.1). The real subscriber send is step 6.
 export async function sendTestToAdmin(issueId: string): Promise<string> {
+  await requireAdmin();
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return "RESEND_API_KEY is not configured — test send unavailable.";
 
