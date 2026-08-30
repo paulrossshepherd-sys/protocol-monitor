@@ -50,6 +50,17 @@ Middleware matches `/admin/:path*` and gates page loads, but **that is not the s
 
 Adding a new action or route handler means adding the check. There is no ambient protection to rely on.
 
+## Public site (§7.2)
+
+- Routes live in the `(public)` route group with their own layout; `/admin` keeps its own. The root layout sets `metadataBase` from `NEXT_PUBLIC_SITE_URL` so archive canonicals and Open Graph URLs are absolute.
+- **Archive pages render from `issues.rendered_html`** (§6.1a) and from no other source. They are server components with no client JavaScript — verified by reading the served HTML, not assumed.
+- The signup form is a plain `<form action={serverAction}>`, so it posts natively when JavaScript is off; results come back as a `?signup=` query parameter rather than client state. Keep it that way.
+- Subscription lifecycle lives in `src/lib/subscribers/lifecycle.ts` (not in the actions), so signup, confirm and unsubscribe are testable against real Postgres.
+- **Unsubscribe is idempotent and token-only** — a human clicking the link and a mail client's RFC 8058 POST to `/api/unsubscribe/[token]` may both arrive. Answer "was this already unsubscribed" from row state via a CTE, never from clock arithmetic against `unsubscribed_at`.
+- A signup for a suppressed address is refused with an explanation rather than silently creating a row that never receives anything (§6.5). Someone who unsubscribed can return, but only through a fresh double opt-in.
+- Confirmation tokens are single-use: `confirmed_at` is set and `confirm_token` nulled in the same statement, which the schema CHECK enforces. A repeat signup while unconfirmed issues a new token and kills the old link.
+- `/privacy` is placeholder copy with the Article 14 headings in place; the operator supplies the wording.
+
 ## Model drafting (§6.3)
 
 - Drafts live in `changes.draft_note`, never written straight to `admin_note`. Acceptance is an explicit operator act (`a` in the queue) that copies one into the other; the model never sets `relevance`, and no code path lets it.
