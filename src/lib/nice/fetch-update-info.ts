@@ -10,29 +10,61 @@ export interface UpdateInfoResult {
 
 const MAX_EXCERPT_CHARS = 4000;
 
-export function makeTargetedFetcher(surfacedUrls: string[]) {
-  const allowed = new Set(surfacedUrls.map((u) => new URL(u).toString()));
+/** Guidance pages carry the section on its own chapter page (verified on NG220). */
+export function updateInformationUrl(guidanceUrl: string): string {
+  const base = guidanceUrl.replace(/\/+$/, "");
+  return `${base}/chapter/Update-information`;
+}
 
-  return async function fetchUpdateInfo(url: string): Promise<UpdateInfoResult> {
-    if (!allowed.has(new URL(url).toString())) {
+// A surfaced guidance URL authorises that page and the chapter pages beneath
+// it — nothing else, and never another guidance item.
+function isBeneath(candidate: URL, surfaced: URL): boolean {
+  if (candidate.origin !== surfaced.origin) return false;
+  const base = surfaced.pathname.replace(/\/+$/, "");
+  return candidate.pathname === base || candidate.pathname.startsWith(`${base}/`);
+}
+
+export function makeTargetedFetcher(surfacedUrls: string[]) {
+  const surfaced = surfacedUrls.map((u) => new URL(u));
+
+  async function fetchOne(url: string): Promise<
+    { html: string } | { error: string }
+  > {
+    const res = await fetch(url, {
+      headers: { "user-agent": "Mozilla/5.0 (ProtocolMonitor operator queue)" },
+      redirect: "follow",
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      // §6.3 firewall contingency: nice.org.uk blocks much cloud-origin
+      // traffic. Record the failure; the operator follows the link instead.
+      return { error: `fetch failed with status ${res.status}` };
+    }
+    return { html: await res.text() };
+  }
+
+  return async function fetchUpdateInfo(guidanceUrl: string): Promise<UpdateInfoResult> {
+    const target = new URL(guidanceUrl);
+    if (!surfaced.some((s) => isBeneath(target, s))) {
       // Hard guard, not a soft skip: nothing outside the pasted set is fetchable.
       throw new Error(
-        `Refusing to fetch ${url}: not surfaced by clipboard ingestion (§9.10)`
+        `Refusing to fetch ${guidanceUrl}: not surfaced by clipboard ingestion (§9.10)`
       );
     }
     try {
-      const res = await fetch(url, {
-        headers: { "user-agent": "Mozilla/5.0 (ProtocolMonitor operator queue)" },
-        redirect: "follow",
-        cache: "no-store",
-      });
-      if (!res.ok) {
-        // §6.3 firewall contingency: nice.org.uk blocks much cloud-origin
-        // traffic. Record the failure; the operator follows the link instead.
-        return { excerpt: null, error: `fetch failed with status ${res.status}` };
+      // The section lives at <url>/chapter/Update-information; the root
+      // guidance page is the fallback for items laid out differently.
+      const chapterResult = await fetchOne(updateInformationUrl(guidanceUrl));
+      if ("html" in chapterResult) {
+        const excerpt = extractUpdateInformation(chapterResult.html);
+        if (excerpt) return { excerpt, error: null };
       }
-      const html = await res.text();
-      const excerpt = extractUpdateInformation(html);
+
+      const rootResult = await fetchOne(guidanceUrl);
+      if ("error" in rootResult) {
+        return { excerpt: null, error: rootResult.error };
+      }
+      const excerpt = extractUpdateInformation(rootResult.html);
       return excerpt
         ? { excerpt, error: null }
         : { excerpt: null, error: "no update-information section found" };

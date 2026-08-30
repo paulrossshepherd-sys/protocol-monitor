@@ -7,6 +7,7 @@ import type { Pool } from "pg";
 import {
   extractUpdateInformation,
   makeTargetedFetcher,
+  updateInformationUrl,
 } from "@/lib/nice/fetch-update-info";
 import { commitNicePaste, previewNicePaste } from "@/lib/nice/ingest";
 import { parseEnGbDate, parseNiceTsv } from "@/lib/nice/paste";
@@ -64,16 +65,21 @@ before(async () => {
   server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
     requestLog.push(path);
-    if (path === "/guidance/ng28") {
+    if (path === "/guidance/ng28/chapter/Update-information") {
+      // where the section actually lives (verified on NG220)
       res.writeHead(200, { "content-type": "text/html" });
       res.end(page("August 2026: recommendation 1.7.2 amended."));
-    } else if (path === "/guidance/ng236") {
+    } else if (path.startsWith("/guidance/ng236")) {
       // §6.3 firewall contingency: cloud-origin fetch blocked
       res.writeHead(403);
       res.end("blocked");
-    } else {
+    } else if (path === "/guidance/ta10945") {
+      // no chapter page; the section sits on the root page instead
       res.writeHead(200, { "content-type": "text/html" });
-      res.end(page("generic"));
+      res.end(page("Terminated: no further evaluation."));
+    } else {
+      res.writeHead(404);
+      res.end("not found");
     }
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -137,20 +143,48 @@ test("a later last-updated date creates exactly one 'updated' change", async () 
   assert.equal(Number(rows[0].count), 1);
 });
 
-test("the fetcher only ever requests surfaced URLs, and excerpts stay internal (§9.10)", async () => {
-  // every request the commits made was to a pasted URL
-  const fetched = requestLog.filter((p) => p.startsWith("/guidance/"));
-  assert.ok(fetched.length > 0);
-  assert.ok(fetched.every((p) => ["/guidance/ng28", "/guidance/ng236", "/guidance/ta10945"].includes(p)));
+test("the update-information chapter page is fetched first, root only as fallback", () => {
+  assert.equal(
+    updateInformationUrl("https://www.nice.org.uk/guidance/ng220"),
+    "https://www.nice.org.uk/guidance/ng220/chapter/Update-information"
+  );
+  // NG28's excerpt came from its chapter page, which was requested first
+  assert.ok(requestLog.includes("/guidance/ng28/chapter/Update-information"));
+  assert.ok(!requestLog.includes("/guidance/ng28"));
+  // TA10945 has no chapter page (404), so the root page was tried after it
+  const ta = requestLog.filter((p) => p.startsWith("/guidance/ta10945"));
+  assert.deepEqual(ta.slice(0, 2), [
+    "/guidance/ta10945/chapter/Update-information",
+    "/guidance/ta10945",
+  ]);
+});
 
-  // and a URL outside the surfaced set is refused outright
-  const fetcher = makeTargetedFetcher([`${baseUrl}/guidance/ng28`]);
-  await assert.rejects(
-    () => fetcher(`${baseUrl}/guidance/anything-else`),
-    /not surfaced by clipboard ingestion/
+test("the fetcher only ever requests paths beneath surfaced URLs (§9.10)", async () => {
+  const surfaced = ["/guidance/ng28", "/guidance/ng236", "/guidance/ta10945"];
+  assert.ok(requestLog.length > 0);
+  assert.ok(
+    requestLog.every((p) => surfaced.some((s) => p === s || p.startsWith(`${s}/`)))
   );
 
-  // excerpt captured where the fetch succeeded; failure recorded where blocked
+  const fetcher = makeTargetedFetcher([`${baseUrl}/guidance/ng28`]);
+  // a chapter beneath the surfaced URL is allowed …
+  await fetcher(`${baseUrl}/guidance/ng28/chapter/Recommendations`);
+  // … a sibling guidance item, a prefix-alike, and another origin are not
+  await assert.rejects(
+    () => fetcher(`${baseUrl}/guidance/ng236`),
+    /not surfaced by clipboard ingestion/
+  );
+  await assert.rejects(
+    () => fetcher(`${baseUrl}/guidance/ng280`),
+    /not surfaced by clipboard ingestion/
+  );
+  await assert.rejects(
+    () => fetcher("https://example.com/guidance/ng28"),
+    /not surfaced by clipboard ingestion/
+  );
+});
+
+test("excerpts are stored as internal queue data; fetch failures are recorded", async () => {
   const { rows } = await pool.query(
     `select external_id, raw_payload->>'update_information' as info,
             raw_payload->>'update_information_error' as err
@@ -159,7 +193,9 @@ test("the fetcher only ever requests surfaced URLs, and excerpts stay internal (
   );
   const ng28 = rows.find((r) => r.external_id === "NG28")!;
   const ng236 = rows.find((r) => r.external_id === "NG236")!;
+  const ta = rows.find((r) => r.external_id === "TA10945")!;
   assert.match(ng28.info, /recommendation 1\.7\.2 amended/);
+  assert.match(ta.info, /Terminated: no further evaluation/); // via root fallback
   assert.equal(ng236.info, null);
   assert.match(ng236.err, /403/); // firewall contingency recorded, not fatal
 });
