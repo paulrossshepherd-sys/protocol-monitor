@@ -2,7 +2,26 @@
 import { Pool } from "pg";
 import { renderIssueHtml, type ChangeForRender } from "../src/lib/issue/render";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const connectionString = process.env.DATABASE_URL;
+
+// This script DELETES every row in changes, raw_items, issues, subscribers and
+// suppressions before seeding. Refuse to do that to anything but a local
+// database unless the caller has very deliberately said otherwise.
+function assertLocal(url: string | undefined): string {
+  if (!url) throw new Error("DATABASE_URL is not set");
+  const host = new URL(url).hostname;
+  const isLocal = ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(host);
+  if (!isLocal && process.env.ALLOW_REMOTE_SEED !== "yes-wipe-this-database") {
+    throw new Error(
+      `Refusing to seed ${host}: this script deletes all existing rows first.\n` +
+        `It is for a local development database only. If you really mean to wipe\n` +
+        `a remote one, set ALLOW_REMOTE_SEED=yes-wipe-this-database.`
+    );
+  }
+  return url;
+}
+
+const pool = new Pool({ connectionString: assertLocal(connectionString) });
 
 const ITEMS: (ChangeForRender & { relevance: "likely" | "other" })[] = [
   { source_key: "ukhsa_wide", source_name: "UKHSA", change_type: "updated", relevance: "likely",
